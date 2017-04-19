@@ -10,7 +10,8 @@ from Bybop_Network import *
 from Bybop_Commands import *
 from Bybop_Discovery import *
 from Bybop_Connection import *
-import arsdkparser
+import ARCommandsParser
+
 
 class State(object):
     """
@@ -77,7 +78,7 @@ class State(object):
                 self._waitlist[name] = {}
             self._waitlist[name][wid] = event
 
-        res =  event.wait(timeout)
+        res = event.wait(timeout)
 
         with self._lock:
             if res:
@@ -154,7 +155,6 @@ class State(object):
             pr_cl[cmd][key] = copy.deepcopy(args)
             self._signal_waiting(pr, cl, cmd)
 
-
     def get_value(self, name):
         """
         Get the current value of a command.
@@ -168,7 +168,7 @@ class State(object):
         - name : The command to get, in 'project.class.command' notation
         """
         try:
-            pr, cl, cmd = name.split('.')
+            [pr, cl, cmd] = name.split('.')
         except ValueError:
             return None
         with self._lock:
@@ -207,7 +207,8 @@ class Device(object):
     initialization. It should not be used directly.
     """
 
-    def __init__(self, ip, c2d_port, d2c_port, ackBuffer=-1, nackBuffer=-1, urgBuffer=-1, cmdBuffers=[], skipCommonInit=False, verbose=False):
+    def __init__(self, ip, c2d_port, d2c_port, ackBuffer=-1, nackBuffer=-1, urgBuffer=-1, cmdBuffers=[],
+                 skipCommonInit=False, verbose=False):
         """
         Create and start a new Device.
 
@@ -259,14 +260,14 @@ class Device(object):
                 key = 'no_arg'
 
             if self._verbose:
-                print 'Received command : ' + str(dico)
+                print('Received command : ' + str(dico))
 
-            type_ = dico['listtype']
-            if type_ == arsdkparser.ArCmdListType.NONE:
+            type = dico['listtype']
+            if type == ARCommandListType.NONE:
                 self._state.put(pr, cl, cmd, args)
-            elif type_ == arsdkparser.ArCmdListType.LIST:
+            elif type == ARCommandListType.LIST:
                 self._state.put_list(pr, cl, cmd, args)
-            elif type_ == arsdkparser.ArCmdListType.MAP:
+            elif type == ARCommandListType.MAP:
                 self._state.put_map(pr, cl, cmd, args, key)
 
     def did_disconnect(self):
@@ -275,7 +276,7 @@ class Device(object):
 
         The application should not call this function directly.
         """
-        print 'Product disconnected !'
+        print('Product disconnected !')
         self.stop()
 
     def get_state(self, copy=True):
@@ -305,14 +306,16 @@ class Device(object):
         except:
             return 0
 
-    def send_data(self, name, *args, **kwargs):
+    def send_data(self, pr, cl, cm, *args, **kwargs):
         """
         Send some command to the product.
 
         Return a NetworkStatus value.
 
         Arguments:
-        - name : The command to send, in 'project.class.command' notation
+        - pr : Project name of the command
+        - cl : Class name of the command
+        - cm : Command name
         - *args : arguments to the command
 
         Keyword arguments:
@@ -320,33 +323,32 @@ class Device(object):
         - timeout : timeout (seconds) per try for acknowledgment (default 0.15)
         """
         try:
-            pr, cl, cm = name.split('.')
             cmd, buf, to = pack_command(pr, cl, cm, *args)
-        except CommandError as e:
-            print 'Bad command !' + str(e)
+        except CommandError:
+            print('Bad command !')
             return NetworkStatus.ERROR
-        bufno=-1
-        if buf == arsdkparser.ArCmdBufferType.NON_ACK:
+        bufno = -1
+        if buf == ARCommandBuffer.NON_ACK:
             bufno = self._nackBuffer
             datatype = Bybop_NetworkAL.DataType.DATA
-        elif buf == arsdkparser.ArCmdBufferType.ACK:
+        elif buf == ARCommandBuffer.ACK:
             bufno = self._ackBuffer
             datatype = Bybop_NetworkAL.DataType.DATA_WITH_ACK
-        elif buf == arsdkparser.ArCmdBufferType.HIGH_PRIO:
+        elif buf == ARCommandBuffer.HIGH_PRIO:
             bufno = self._urgBuffer
             datatype = Bybop_NetworkAL.DataType.DATA_LOW_LATENCY
 
         if bufno == -1:
-            print 'No suitable buffer'
+            print('No suitable buffer')
             return NetworkStatus.ERROR
 
         retries = kwargs['retries'] if 'retries' in kwargs else 5
         timeout = kwargs['timeout'] if 'timeout' in kwargs else 0.15
 
-        status = self._network.send_data(bufno, cmd, datatype, timeout=timeout, tries=retries+1)
+        status = self._network.send_data(bufno, cmd, datatype, timeout=timeout, tries=retries + 1)
 
         if status == 0 and self._verbose:
-            print 'Sent command %s.%s.%s with args %s' % (pr, cl, cm, str(args))
+            print('Sent command %s.%s.%s with args %s' % (pr, cl, cm, str(*args)))
 
         return status
 
@@ -375,15 +377,15 @@ class Device(object):
         now = time.gmtime()
         dateStr = time.strftime('%Y-%m-%d', now)
         timeStr = time.strftime('T%H%M%S+0000', now)
-        self.send_data('common.Common.CurrentDate', dateStr)
-        self.send_data('common.Common.CurrentTime', timeStr)
-        self.send_data('common.Settings.AllSettings')
+        self.send_data('common', 'Common', 'CurrentDate', dateStr)
+        self.send_data('common', 'Common', 'CurrentTime', timeStr)
+        self.send_data('common', 'Settings', 'AllSettings')
         self.wait_answer('common.SettingsState.AllSettingsChanged')
-        self.send_data('common.Common.AllStates')
+        self.send_data('common', 'Common', 'AllStates')
         self.wait_answer('common.CommonState.AllStatesChanged')
 
     def dump_state(self):
-        print 'Internal state :'
+        print('Internal state :')
         self._state.dump()
 
     def stop(self):
@@ -405,23 +407,24 @@ class BebopDrone(Device):
         - c2d_port : The remote port (on which we will send data)
         - d2c_port : The local port (on which we will read data)
         """
-        super(BebopDrone, self).__init__(ip, c2d_port, d2c_port, ackBuffer=11, nackBuffer=10, urgBuffer=12, cmdBuffers=[127, 126])
+        super(BebopDrone, self).__init__(ip, c2d_port, d2c_port, ackBuffer=11, nackBuffer=10, urgBuffer=12,
+                                         cmdBuffers=[127, 126])
 
     def _init_product(self):
         # Deactivate video streaming
-        self.send_data('ardrone3.MediaStreaming.VideoEnable', 0)
+        self.send_data('ARDrone3', 'MediaStreaming', 'VideoEnable', 0)
 
     def take_off(self):
         """
         Send a take off request to the Bebop Drone.
         """
-        self.send_data('ardrone3.Piloting.TakeOff')
+        self.send_data('ARDrone3', 'Piloting', 'TakeOff')
 
     def land(self):
         """
         Send a landing request to the Bebop Drone.
         """
-        self.send_data('ardrone3.Piloting.Landing')
+        self.send_data('ARDrone3', 'Piloting', 'Landing')
 
     def emergency(self):
         """
@@ -429,7 +432,8 @@ class BebopDrone(Device):
 
         An emergency request shuts down the motors.
         """
-        self.send_data('ardrone3.Piloting.Emergency')
+        self.send_data('ARDrone3', 'Piloting', 'Emergency')
+
 
 class JumpingSumo(Device):
     def __init__(self, ip, c2d_port, d2c_port):
@@ -447,7 +451,7 @@ class JumpingSumo(Device):
 
     def _init_product(self):
         # Deactivate video streaming
-        self.send_data('jpsumo.MediaStreaming.VideoEnable', 0)
+        self.send_data('JumpingSumo', 'MediaStreaming', 'VideoEnable', 0)
 
     def change_posture(self, posture):
         """
@@ -462,7 +466,7 @@ class JumpingSumo(Device):
         - 1 : jumper
         - 2 : kicker
         """
-        return self.send_data('jpsumo.Piloting.Posture', posture)
+        return self.send_data('JumpingSumo', 'Piloting', 'Posture', posture)
 
     def change_volume(self, volume):
         """
@@ -471,7 +475,7 @@ class JumpingSumo(Device):
         Arguments:
         - volume : integer value [0; 100] : percentage of maximum volume.
         """
-        return self.send_data('jpsumo.AudioSettings.MasterVolume', volume)
+        return self.send_data('JumpingSumo', 'AudioSettings', 'MasterVolume', volume)
 
     def jump(self, jump_type):
         """
@@ -485,8 +489,7 @@ class JumpingSumo(Device):
         - 0 : long
         - 1 : high
         """
-        return self.send_data('jpsumo.Animations.Jump', jump_type)
-
+        return self.send_data('JumpingSumo', 'Animations', 'Jump', jump_type)
 
 
 class SkyController(Device):
@@ -501,13 +504,14 @@ class SkyController(Device):
         - c2d_port : The remote port (on which we will send data)
         - d2c_port : The local port (on which we will read data)
         """
-        super(SkyController, self).__init__(ip, c2d_port, d2c_port, ackBuffer=11, nackBuffer=10, urgBuffer=12, cmdBuffers=[127, 126], skipCommonInit=True)
+        super(SkyController, self).__init__(ip, c2d_port, d2c_port, ackBuffer=11, nackBuffer=10, urgBuffer=12,
+                                            cmdBuffers=[127, 126], skipCommonInit=True)
 
     def _init_product(self):
-        self.send_data('skyctrl.Settings.AllSettings')
-        self.wait_answer('skyctrl.SettingsState.AllSettingsChanged')
-        self.send_data('skyctrl.Common.AllStates')
-        self.wait_answer('skyctrl.CommonState.AllStatesChanged')
+        self.send_data('SkyController', 'Settings', 'AllSettings')
+        self.wait_answer('SkyController.SettingsState.AllSettingsChanged')
+        self.send_data('SkyController', 'Common', 'AllStates')
+        self.wait_answer('SkyController.CommonState.AllStatesChanged')
 
 
 def create_and_connect(device, d2c_port, controller_type, controller_name):
@@ -515,24 +519,24 @@ def create_and_connect(device, d2c_port, controller_type, controller_name):
     ip = get_ip(device)
     port = get_port(device)
     if device_id not in DeviceID.ALL:
-        print 'Unknown product ' + device_id
+        print('Unknown product ' + device_id)
         return None
 
     connection = Connection(ip, port)
     answer = connection.connect(d2c_port, controller_type, controller_name)
     if not answer:
-        print 'Unable to connect'
+        print('Unable to connect')
         return None
     if answer['status'] != 0:
-        print 'Connection refused'
+        print('Connection refused')
         return None
 
     c2d_port = answer['c2d_port']
 
-    if device_id == DeviceID.BEBOP_DRONE or device_id == DeviceID.BEBOP_2:
+    if device_id == DeviceID.MAMBO:
         return BebopDrone(ip, c2d_port, d2c_port)
     elif device_id == DeviceID.JUMPING_SUMO or device_id == DeviceID.JUMPING_NIGHT or device_id == DeviceID.JUMPING_RACE:
         return JumpingSumo(ip, c2d_port, d2c_port)
-    elif device_id == DeviceID.SKYCONTROLLER or device_id == DeviceID.SKYCONTROLLER_2:
+    elif device_id == DeviceID.SKYCONTROLLER:
         return SkyController(ip, c2d_port, d2c_port)
     return None
